@@ -8,3 +8,6 @@ garmin_tokens.json
 data/
 .DS_Store
 *.bak
+
+# Credenciales locales (nunca al repo)
+garmin.env

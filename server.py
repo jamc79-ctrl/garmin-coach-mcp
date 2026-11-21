@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import env_loader  # noqa: F401  (carga garmin.env antes de leer variables)
+
 import base64
 import functools
 import json

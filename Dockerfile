@@ -9,7 +9,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
-COPY server.py .
+COPY env_loader.py server.py ./
 
 RUN mkdir -p /data
 

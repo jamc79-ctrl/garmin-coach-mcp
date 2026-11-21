@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import getpass
+import os
 from pathlib import Path
 
+import env_loader  # noqa: F401  (carga garmin.env)
 from garminconnect import Garmin
 
 
 def main() -> None:
-    email = input("Email Garmin: ").strip()
-    password = getpass.getpass("Contraseña Garmin: ")
+    # Si rellenaste garmin.env se usan esos valores; si no, se piden aquí.
+    email = os.getenv("GARMIN_EMAIL", "").strip() or input("Email Garmin: ").strip()
+    password = os.getenv("GARMIN_PASSWORD", "") or getpass.getpass("Contraseña Garmin: ")
 
     token_dir = Path.home() / ".garminconnect"
     token_dir.mkdir(parents=True, exist_ok=True)
