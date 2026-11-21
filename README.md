@@ -150,7 +150,7 @@ Todo se hace desde el navegador, sin terminal. El servidor sirve un panel en `/`
 - **Conectar Garmin**: reemplaza a `login_once.py`. Email + contraseña + MFA, todo web, en 3 pasos.
 - **Guardado permanente**: pega un Railway API token; el servidor guarda `GARMIN_TOKENS_JSON` y `RAILWAY_API_TOKEN` en Railway vía su API (usando `curl_cffi` para pasar Cloudflare). Cero copy-paste manual de variables.
 - **Protección con contraseña**: eliges tu propia contraseña (o generas una al azar). El servidor la guarda en Railway (`ADMIN_TOKEN`) **y** en un archivo local que lee en vivo → los cambios de contraseña son **instantáneos, sin reiniciar el servidor**.
-- **Auto-sync opcional**: con `AUTO_SYNC_TOKENS=1`, un hilo de fondo sincroniza el token maestro a Railway si rota.
+- **Auto-sync opcional**: con `AUTO_SYNC_TOKENS=1`, un hilo de fondo guarda en `GARMIN_TOKENS_JSON` (Railway) los tokens de Garmin cuando se renuevan, sin redesplegar. Así un reinicio o redeploy no arranca con tokens caducados.
 
 ### Detalles del acceso por contraseña
 
@@ -229,8 +229,8 @@ python server.py              # → http://localhost:8000
 | `GARMIN_LANGUAGE` | `es` | Idioma de traducciones |
 | `CACHE_MINUTES` | `30` | Minutos entre refresco de caché |
 | `ACTIVITY_LIMIT` | `8` | Límite de actividades en caché |
-| `AUTO_SYNC_TOKENS` | `0` | Si `1`, sincroniza el OAuth1 rotado a Railway cada 12h |
-| `AUTO_SYNC_INTERVAL_SECONDS` | `43200` | Intervalo del auto-sync (mínimo 3600) |
+| `AUTO_SYNC_TOKENS` | `0` | Si `1`, guarda en Railway los tokens renovados (DI refresh token u OAuth1 antiguo). Necesita `RAILWAY_API_TOKEN` |
+| `AUTO_SYNC_INTERVAL_SECONDS` | `3600` | Cada cuánto comprueba si los tokens han cambiado (mínimo 3600) |
 | `RAILWAY_FALLBACK_URL` | _(vacío)_ | Opcional: reenvía a otra instancia si fallan los tokens locales |
 
 ### Inyectadas automáticamente por Railway (no las pongas tú)

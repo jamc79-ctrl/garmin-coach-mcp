@@ -709,7 +709,9 @@ def _railway_graphql_call(token: str, payload: dict, *, project_header: bool) ->
         raise RuntimeError(f"Railway API inalcanzable: {exc.reason}") from exc
 
 
-def _update_railway_variable_with_token(token: str, name: str, value: str) -> None:
+def _update_railway_variable_with_token(
+    token: str, name: str, value: str, *, skip_deploys: bool = False
+) -> None:
     """Upsert a service variable in Railway via the public GraphQL API.
 
     Tries account-token auth (Authorization: Bearer) first and falls back to
@@ -747,6 +749,8 @@ def _update_railway_variable_with_token(token: str, name: str, value: str) -> No
             }
         },
     }
+    if skip_deploys:
+        payload["variables"]["input"]["skipDeploys"] = True
 
     last_problem = ""
     for project_header in (False, True):
@@ -774,6 +778,10 @@ def _update_railway_variable_with_token(token: str, name: str, value: str) -> No
             if "not authorized" in low or "unauthorized" in low or "forbidden" in low:
                 last_problem = f"sin permisos: {msg}"
                 continue  # token valid but maybe wrong scope; try other style
+            if skip_deploys and "skipdeploys" in low:
+                # API sin soporte para skipDeploys: reintenta sin él (habrá redeploy).
+                _update_railway_variable_with_token(token, name, value)
+                return
             raise RuntimeError(f"Railway API: {msg}")
         return  # success (no errors)
 
@@ -817,9 +825,9 @@ def _railway_variable_equals(token: str, name: str, expected: str) -> bool:
     return False
 
 
-def _update_railway_variable(name: str, value: str) -> None:
+def _update_railway_variable(name: str, value: str, *, skip_deploys: bool = False) -> None:
     """Upsert a variable using the globally-configured RAILWAY_API_TOKEN."""
-    _update_railway_variable_with_token(RAILWAY_API_TOKEN, name, value)
+    _update_railway_variable_with_token(RAILWAY_API_TOKEN, name, value, skip_deploys=skip_deploys)
 
 
 def _login_render_page(
@@ -3067,47 +3075,76 @@ def get_window_rollup(days: int = 7) -> list[dict[str, Any]]:
 
 
 AUTO_SYNC_TOKENS = os.getenv("AUTO_SYNC_TOKENS", "0").lower() in {"1", "true", "yes"}
-AUTO_SYNC_INTERVAL_SECONDS = max(3600, int(os.getenv("AUTO_SYNC_INTERVAL_SECONDS", "43200")))
+AUTO_SYNC_INTERVAL_SECONDS = max(3600, int(os.getenv("AUTO_SYNC_INTERVAL_SECONDS", "3600")))
 
 
-def _extract_oauth1_signature(tokens_text: str) -> str | None:
-    """Return a stable identifier for the OAuth1 portion, to detect master-token rotations."""
+def _extract_token_signature(tokens_text: str) -> str | None:
+    """Return a stable identifier of the long-lived part of the Garmin tokens.
+
+    - garminconnect >= 0.3 (sin garth): el refresh token DI (``di_refresh_token``),
+      que Garmin rota al renovar la sesión.
+    - Formato garth antiguo: el token OAuth1 maestro (``oauth1_token``).
+
+    Acepta JSON o base64 de JSON (como GARMIN_TOKENS_JSON).
+    """
     try:
-        parsed = json.loads(tokens_text)
-    except (json.JSONDecodeError, TypeError):
+        parsed = _json_loads_maybe_base64(tokens_text)
+    except Exception:
         return None
-    if not isinstance(parsed, dict):
-        return None
-    # garth stores oauth1_token as a base64 string or as a nested object with oauth_token/oauth_token_secret.
+    di_refresh = parsed.get("di_refresh_token")
+    if isinstance(di_refresh, str) and di_refresh:
+        return f"di:{di_refresh}"
     oauth1 = parsed.get("oauth1_token")
-    if isinstance(oauth1, str):
-        return oauth1
+    if isinstance(oauth1, str) and oauth1:
+        return f"oauth1:{oauth1}"
     if isinstance(oauth1, dict):
         token = oauth1.get("oauth_token") or ""
         secret = oauth1.get("oauth_token_secret") or ""
         if token or secret:
-            return f"{token}:{secret}"
+            return f"oauth1:{token}:{secret}"
     return None
 
 
+# Backward-compatible alias (old name, used to only understand garth tokens).
+_extract_oauth1_signature = _extract_token_signature
+
+AUTO_SYNC_FIRST_CHECK_SECONDS = 60
+
+
+def _auto_sync_tokens_once(last_synced_signature: str | None) -> str | None:
+    """Push the on-disk tokens to Railway if they rotated. Returns the synced signature."""
+    if not TOKEN_FILE.exists():
+        return last_synced_signature
+    disk_text = TOKEN_FILE.read_text(encoding="utf-8")
+    disk_sig = _extract_token_signature(disk_text)
+    if not disk_sig or disk_sig == last_synced_signature:
+        return last_synced_signature
+    if not (RAILWAY_API_TOKEN and RAILWAY_PROJECT_ID and RAILWAY_ENVIRONMENT_ID and RAILWAY_SERVICE_ID):
+        return last_synced_signature
+    # skip_deploys: el proceso ya usa los tokens del disco; no hace falta redesplegar.
+    _update_railway_variable("GARMIN_TOKENS_JSON", disk_text, skip_deploys=True)
+    print("[auto-sync] GARMIN_TOKENS_JSON actualizado en Railway (tokens renovados)", flush=True)
+    return disk_sig
+
+
 def _auto_sync_tokens_loop() -> None:
-    """Detect rotations of the OAuth1 master token and push them to Railway."""
-    last_synced_signature: str | None = _extract_oauth1_signature(GARMIN_TOKENS_JSON) if GARMIN_TOKENS_JSON else None
+    """Detect rotations of the long-lived Garmin token and push them to Railway.
+
+    Así, si el servicio se reinicia o se redespliega sin volumen persistente,
+    arranca con tokens vigentes en vez de con los del primer login.
+    """
+    last_synced_signature: str | None = (
+        _extract_token_signature(GARMIN_TOKENS_JSON) if GARMIN_TOKENS_JSON else None
+    )
+    delay = AUTO_SYNC_FIRST_CHECK_SECONDS
     while True:
+        time.sleep(delay)
+        delay = AUTO_SYNC_INTERVAL_SECONDS
         try:
-            time.sleep(AUTO_SYNC_INTERVAL_SECONDS)
-            if not TOKEN_FILE.exists():
-                continue
-            disk_text = TOKEN_FILE.read_text(encoding="utf-8")
-            disk_sig = _extract_oauth1_signature(disk_text)
-            if not disk_sig or disk_sig == last_synced_signature:
-                continue
-            if not (RAILWAY_API_TOKEN and RAILWAY_PROJECT_ID and RAILWAY_ENVIRONMENT_ID and RAILWAY_SERVICE_ID):
-                continue
-            _update_railway_variable("GARMIN_TOKENS_JSON", disk_text)
-            last_synced_signature = disk_sig
-        except Exception:
+            last_synced_signature = _auto_sync_tokens_once(last_synced_signature)
+        except Exception as exc:
             # Never crash the loop; we'll retry on the next interval.
+            print(f"[auto-sync] No se pudo sincronizar con Railway: {exc}", flush=True)
             continue
 
 
